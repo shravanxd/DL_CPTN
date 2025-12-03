@@ -202,7 +202,7 @@ def create_sample_submission(test_df, output_dir):
 
 def create_readme(output_dir, num_classes, resolution):
     """Create README for dataset"""
-    readme = f\"\"\"# SUN397 Scene Recognition Dataset (Final Evaluation)
+    readme = f"""# SUN397 Scene Recognition Dataset (Final Evaluation)
 ## Dataset Info
 - **Source**: SUN397 (Scene UNderstanding)
 - **Classes**: {num_classes} scene categories
@@ -231,7 +231,7 @@ id,class_id
 J. Xiao, J. Hays, K. Ehinger, A. Oliva, and A. Torralba.
 SUN Database: Large-scale Scene Recognition from Abbey to Zoo.
 IEEE Conference on Computer Vision and Pattern Recognition, 2010.
-\"\"\"
+"""
     
     with open(output_dir / 'README.md', 'w') as f:
         f.write(readme)
