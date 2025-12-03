@@ -1,18 +1,8 @@
 """
 SUN397 Dataset Preparation for Kaggle Competition (Final Evaluation)
 =====================================================================
-
-Creates Kaggle competition from SUN397 (Scene Understanding):
-- All 397 scene classes
-- ~108k images
-- Resize to 96x96 during processing (memory efficient)
-
-Usage:
-    python prepare_sun397_for_kaggle.py \
-        --output_dir ./kaggle_data_sun397 \
-        --resolution 96
+Optimized version: Processes images one by one to avoid OOM errors.
 """
-
 import os
 import shutil
 import pandas as pd
@@ -24,12 +14,9 @@ from PIL import Image
 from tqdm import tqdm
 import argparse
 
-
 def download_sun397(download_dir):
     """
     Download SUN397 dataset using HuggingFace datasets
-    
-    This is much more reliable than the old URL!
     """
     download_dir = Path(download_dir)
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -41,8 +28,6 @@ def download_sun397(download_dir):
     
     print("="*60)
     print("Downloading SUN397 from HuggingFace...")
-    print("This will download ~37 GB (original resolution)")
-    print("We'll resize to 96px during processing to save space")
     print("="*60)
     
     # Load SUN397 from HuggingFace
@@ -51,17 +36,12 @@ def download_sun397(download_dir):
     
     print(f"\nDataset loaded!")
     print(f"  Train: {len(dataset['train'])} images")
-    if 'test' in dataset:
-        print(f"  Test: {len(dataset['test'])} images")
     
     return dataset
-
 
 def load_sun397_structure(dataset):
     """
     Load SUN397 dataset structure from HuggingFace dataset
-    
-    HuggingFace format: {'image': PIL.Image, 'label': int}
     """
     print("\n" + "="*60)
     print("Processing SUN397 structure...")
@@ -76,15 +56,11 @@ def load_sun397_structure(dataset):
     print(f"\nTotal classes: {len(label_names)}")
     print(f"Total images: {len(train_data)}")
     
-    print(f"\nSample classes:")
-    for idx, name in enumerate(label_names[:10]):
-        print(f"  {idx}: {name}")
-    print("  ...")
-    
     # Count images per class
+    print("Counting classes...")
+    labels = train_data['label'] # This should be efficient
     class_counts = {}
-    for item in train_data:
-        label = item['label']
+    for label in labels:
         class_counts[label] = class_counts.get(label, 0) + 1
     
     class_info = [
@@ -98,7 +74,6 @@ def load_sun397_structure(dataset):
     
     return class_info, train_data
 
-
 def create_kaggle_dataset(
     hf_dataset,
     output_dir,
@@ -109,13 +84,6 @@ def create_kaggle_dataset(
     """
     Create Kaggle competition dataset from SUN397 HuggingFace dataset
     Process images at 96px to keep memory low!
-    
-    Args:
-        hf_dataset: HuggingFace dataset (train split)
-        output_dir: Output directory
-        class_info: List of class information dicts
-        resolution: Target resolution (96, 224, etc.)
-        seed: Random seed
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -123,54 +91,47 @@ def create_kaggle_dataset(
     np.random.seed(seed)
     
     print("\n" + "="*60)
-    print(f"Creating SUN397 Kaggle dataset")
+    print(f"Creating SUN397 Kaggle dataset (Optimized Streaming)")
     print(f"  Classes: {len(class_info)}")
     print(f"  Images: {len(hf_dataset)}")
     print(f"  Resolution: {resolution}x{resolution}")
-    print(f"  (Resizing during save to keep memory low)")
     print("="*60)
     
-    # Collect all images with labels
-    print("\nCollecting all images...")
-    all_data = []
+    # Generate indices and shuffle them instead of loading images
+    n_total = len(hf_dataset)
+    all_indices = np.arange(n_total)
+    np.random.shuffle(all_indices)
     
-    for idx in tqdm(range(len(hf_dataset)), desc="Loading images"):
-        item = hf_dataset[idx]
-        all_data.append({
-            'hf_index': idx,
-            'image': item['image'],  # PIL Image
-            'class_id': item['label'],
-            'class_name': class_info[item['label']]['class_name']
-        })
-    
-    print(f"Total images collected: {len(all_data)}")
-    
-    # Shuffle and split
-    np.random.shuffle(all_data)
-    
-    n_total = len(all_data)
     n_train = int(n_total * 0.70)
     n_val = int(n_total * 0.15)
     
-    train_data = all_data[:n_train]
-    val_data = all_data[n_train:n_train+n_val]
-    test_data = all_data[n_train+n_val:]
+    train_indices = all_indices[:n_train]
+    val_indices = all_indices[n_train:n_train+n_val]
+    test_indices = all_indices[n_train+n_val:]
     
     print(f"\nSplit sizes:")
-    print(f"  Train: {len(train_data)} images")
-    print(f"  Val: {len(val_data)} images")
-    print(f"  Test: {len(test_data)} images")
+    print(f"  Train: {len(train_indices)} images")
+    print(f"  Val: {len(val_indices)} images")
+    print(f"  Test: {len(test_indices)} images")
     
     # Save images (resize during save to keep memory low!)
-    def save_split(split_data, split_name):
+    def save_split(indices, split_name):
         split_dir = output_dir / split_name
         split_dir.mkdir(parents=True, exist_ok=True)
         
         metadata = []
         
         print(f"\nSaving {split_name} images (resize to {resolution}x{resolution})...")
-        for idx, item in enumerate(tqdm(split_data, desc=f"{split_name}")):
+        
+        # Process one by one
+        for i, idx in enumerate(tqdm(indices, desc=f"{split_name}")):
+            # Convert numpy int to python int for HF dataset access
+            idx = int(idx) 
             try:
+                item = hf_dataset[idx]
+                class_id = item['label']
+                class_name = class_info[class_id]['class_name']
+                
                 # Get PIL image from HuggingFace dataset
                 img = item['image'].convert('RGB')
                 
@@ -178,28 +139,29 @@ def create_kaggle_dataset(
                 img = img.resize((resolution, resolution), Image.BILINEAR)
                 
                 # Save with new filename
-                filename = f"{idx:06d}_class{item['class_id']:03d}.jpg"
+                filename = f"{i:06d}_class{class_id:03d}.jpg"
                 img.save(split_dir / filename, quality=85)
                 
                 metadata.append({
                     'filename': filename,
-                    'class_id': item['class_id'],
-                    'class_name': item['class_name']
+                    'class_id': class_id,
+                    'class_name': class_name
                 })
                 
-                # Clear memory
+                # Clear memory explicitly
                 del img
+                del item
                 
             except Exception as e:
-                print(f"\nWarning: Failed to process image {idx}: {e}")
+                print(f"\nWarning: Failed to process image index {idx}: {e}")
                 continue
         
         return pd.DataFrame(metadata)
     
     # Save all splits
-    train_df = save_split(train_data, 'train')
-    val_df = save_split(val_data, 'val')
-    test_df = save_split(test_data, 'test')
+    train_df = save_split(train_indices, 'train')
+    val_df = save_split(val_indices, 'val')
+    test_df = save_split(test_indices, 'test')
     
     # Save CSVs
     train_df.to_csv(output_dir / 'train_labels.csv', index=False)
@@ -209,7 +171,7 @@ def create_kaggle_dataset(
     test_df.to_csv(output_dir / 'test_labels_INTERNAL.csv', index=False)
     test_df[['filename']].to_csv(output_dir / 'test_images.csv', index=False)
     
-    # Create sample submission (solution.csv removed - for TAs only!)
+    # Create sample submission
     create_sample_submission(test_df, output_dir)
     
     # Create class mapping file
@@ -226,7 +188,6 @@ def create_kaggle_dataset(
     
     return train_df, val_df, test_df
 
-
 def create_sample_submission(test_df, output_dir):
     """Create sample_submission.csv"""
     output_dir = Path(output_dir)
@@ -239,20 +200,15 @@ def create_sample_submission(test_df, output_dir):
     sample_submission.to_csv(output_dir / 'sample_submission.csv', index=False)
     print(f"\nSample submission created")
 
-
 def create_readme(output_dir, num_classes, resolution):
     """Create README for dataset"""
-    readme = f"""# SUN397 Scene Recognition Dataset (Final Evaluation)
-
+    readme = f\"\"\"# SUN397 Scene Recognition Dataset (Final Evaluation)
 ## Dataset Info
-
 - **Source**: SUN397 (Scene UNderstanding)
 - **Classes**: {num_classes} scene categories
 - **Resolution**: {resolution}x{resolution}
 - **Task**: Scene recognition (indoor/outdoor environments)
-
 ## Files
-
 - `train/` - Training images with labels
 - `val/` - Validation images with labels
 - `test/` - Test images (no labels)
@@ -261,31 +217,24 @@ def create_readme(output_dir, num_classes, resolution):
 - `test_images.csv` - Test image list (no labels)
 - `class_mapping.csv` - Class ID to scene name mapping
 - `sample_submission.csv` - Example submission format
-
 ## Scene Categories
-
 Examples: abbey, airport_terminal, bedroom, beach, forest, kitchen, mountain, 
 office, restaurant, street, subway, etc.
-
 ## Submission Format
-
 ```csv
 id,class_id
 000001_class042.jpg,42
 000002_class015.jpg,15
 ...
 ```
-
 ## Citation
-
 J. Xiao, J. Hays, K. Ehinger, A. Oliva, and A. Torralba.
 SUN Database: Large-scale Scene Recognition from Abbey to Zoo.
 IEEE Conference on Computer Vision and Pattern Recognition, 2010.
-"""
+\"\"\"
     
     with open(output_dir / 'README.md', 'w') as f:
         f.write(readme)
-
 
 def main():
     parser = argparse.ArgumentParser(description='Prepare SUN397 for Kaggle (Final Eval)')
@@ -328,7 +277,5 @@ def main():
     print(f"Data saved to: {args.output_dir}")
     print("\nThis dataset is for evaluation.")
 
-
 if __name__ == "__main__":
     main()
-
